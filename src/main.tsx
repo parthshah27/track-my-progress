@@ -44,11 +44,44 @@ import {
   saveWeeklyReview,
   type WeeklyReview,
 } from "./services/weeklyReviews";
+import {
+  DEFAULT_ENABLED_AREAS,
+  TRACKING_AREAS,
+  TRACKING_AREAS_STORAGE_KEY,
+  formatStudyMinutes,
+  readEnabledAreas,
+  type TrackingArea,
+} from "./tracking";
 
 import "./styles.css";
 
-type Tab = "dashboard" | "checkin" | "history" | "analytics" | "review" | "goals";
+type Tab = "dashboard" | "checkin" | "history" | "analytics" | "review" | "goals" | "settings";
 type AnalyticsRange = "7d" | "30d" | "all";
+
+export function getAuthRedirectUrl({
+  env = import.meta.env,
+  origin = typeof window !== "undefined" ? window.location.origin : "",
+} = {}) {
+  const configuredUrl =
+    env.VITE_SUPABASE_REDIRECT_URL ??
+    env.VITE_APP_URL ??
+    env.VITE_REDIRECT_URL ??
+    "";
+
+  return configuredUrl || origin || "http://localhost:3000";
+}
+
+export function stripSupabaseAuthHash(url = typeof window !== "undefined" ? window.location.href : "") {
+  if (!url || !url.includes("#")) return url;
+
+  const hash = url.split("#")[1] ?? "";
+  const hasAuthToken = /(?:^|&)(access_token|refresh_token|token_type|expires_in|expires_at|provider_token)=/.test(hash);
+
+  if (!hasAuthToken) return url;
+
+  const pathAndQuery = url.split("#")[0] || "/";
+  return pathAndQuery;
+}
 
 type WeeklyInsight = {
   type: "warning" | "positive" | "focus";
@@ -241,6 +274,7 @@ function App() {
       }
     });
   const [monthlyGoalMessage, setMonthlyGoalMessage] = useState("");
+  const [enabledAreas, setEnabledAreas] = useState<TrackingArea[]>(readEnabledAreas);
 
   const [goals, setGoals] = useState<Goal[]>([]);
   const [goalsLoading, setGoalsLoading] = useState(false);
@@ -271,6 +305,32 @@ function App() {
 
   const currentWeekStart = getCurrentWeekStart();
   const activeReviewWeek = selectedReviewWeek ?? currentWeekStart;
+  const showTrading = enabledAreas.includes("trading");
+  const showLearning = enabledAreas.includes("learning");
+
+  const reflectionPrompts = useMemo(() => {
+    if (showTrading && !showLearning) {
+      return {
+        achievement: "Today's trading win",
+        mistake: "What went wrong in execution?",
+        priority: "Tomorrow's one trading priority",
+      };
+    }
+
+    if (showLearning && !showTrading) {
+      return {
+        achievement: "Today's learning win",
+        mistake: "What was difficult or unclear?",
+        priority: "Tomorrow's one learning priority",
+      };
+    }
+
+    return {
+      achievement: "Today's achievement",
+      mistake: "What went wrong?",
+      priority: "Tomorrow's one priority",
+    };
+  }, [showTrading, showLearning]);
 
   useEffect(() => {
     window.localStorage.setItem(
@@ -278,6 +338,28 @@ function App() {
       JSON.stringify(monthlyGoalTargets)
     );
   }, [monthlyGoalTargets]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(
+        TRACKING_AREAS_STORAGE_KEY,
+        JSON.stringify(enabledAreas)
+      );
+    }
+  }, [enabledAreas]);
+
+  function toggleTrackingArea(area: TrackingArea) {
+    setEnabledAreas((previous) => {
+      const isEnabled = previous.includes(area);
+
+      if (isEnabled) {
+        const next = previous.filter((item) => item !== area);
+        return next.length > 0 ? next : DEFAULT_ENABLED_AREAS;
+      }
+
+      return [...previous, area];
+    });
+  }
 
   function updateMonthlyGoalTarget(
     key: keyof MonthlyGoalTargets,
@@ -526,6 +608,13 @@ function App() {
       } = await supabase.auth.getSession();
 
       const currentUser = session?.user ?? null;
+
+      if (typeof window !== "undefined") {
+        const cleanUrl = stripSupabaseAuthHash();
+        if (cleanUrl !== window.location.href) {
+          window.history.replaceState({}, document.title, cleanUrl);
+        }
+      }
 
       setUser(currentUser);
       setAuthLoading(false);
@@ -871,62 +960,66 @@ function App() {
       });
     }
 
-    if (weeklySummary.ruleFollowRate > 0) {
-      if (weeklySummary.ruleFollowRate < 70) {
+    if (showTrading) {
+      if (weeklySummary.ruleFollowRate > 0) {
+        if (weeklySummary.ruleFollowRate < 70) {
+          insights.push({
+            type: "warning",
+            title: "Trading discipline needs attention",
+            message: `Your rule-follow rate was ${weeklySummary.ruleFollowRate.toFixed(0)}%. The issue may be execution rather than strategy.`,
+          });
+        } else if (weeklySummary.ruleFollowRate >= 90) {
+          insights.push({
+            type: "positive",
+            title: "Strong rule discipline",
+            message: `You followed your trading rules ${weeklySummary.ruleFollowRate.toFixed(0)}% of the time.`,
+          });
+        }
+      }
+
+      if (weeklySummary.forcedTrades > 0) {
         insights.push({
           type: "warning",
-          title: "Trading discipline needs attention",
-          message: `Your rule-follow rate was ${weeklySummary.ruleFollowRate.toFixed(0)}%. The issue may be execution rather than strategy.`,
+          title: "Forced trades detected",
+          message: `${weeklySummary.forcedTrades} forced trade${
+            weeklySummary.forcedTrades === 1 ? "" : "s"
+          } logged this week. Removing unnecessary trades may matter more than finding more setups.`,
         });
-      } else if (weeklySummary.ruleFollowRate >= 90) {
-        insights.push({
-          type: "positive",
-          title: "Strong rule discipline",
-          message: `You followed your trading rules ${weeklySummary.ruleFollowRate.toFixed(0)}% of the time.`,
-        });
+      }
+
+      if (weeklySummary.profitableDays + weeklySummary.losingDays >= 3) {
+        if (weeklySummary.losingDays > weeklySummary.profitableDays) {
+          insights.push({
+            type: "warning",
+            title: "More losing days than profitable days",
+            message: `${weeklySummary.losingDays} losing days versus ${weeklySummary.profitableDays} profitable days.`,
+          });
+        } else if (weeklySummary.profitableDays > weeklySummary.losingDays) {
+          insights.push({
+            type: "positive",
+            title: "Positive trading week",
+            message: `${weeklySummary.profitableDays} profitable days versus ${weeklySummary.losingDays} losing days.`,
+          });
+        }
       }
     }
 
-    if (weeklySummary.forcedTrades > 0) {
-      insights.push({
-        type: "warning",
-        title: "Forced trades detected",
-        message: `${weeklySummary.forcedTrades} forced trade${
-          weeklySummary.forcedTrades === 1 ? "" : "s"
-        } logged this week. Removing unnecessary trades may matter more than finding more setups.`,
-      });
-    }
-
-    if (weeklySummary.profitableDays + weeklySummary.losingDays >= 3) {
-      if (weeklySummary.losingDays > weeklySummary.profitableDays) {
+    if (showLearning) {
+      if (weeklySummary.studyMinutes === 0) {
         insights.push({
           type: "warning",
-          title: "More losing days than profitable days",
-          message: `${weeklySummary.losingDays} losing days versus ${weeklySummary.profitableDays} profitable days.`,
+          title: "No upskilling logged",
+          message: "No study time was recorded this week. Either you did not study, or you did not log it.",
         });
-      } else if (weeklySummary.profitableDays > weeklySummary.losingDays) {
+      } else if (weeklySummary.studyMinutes >= 300) {
         insights.push({
           type: "positive",
-          title: "Positive trading week",
-          message: `${weeklySummary.profitableDays} profitable days versus ${weeklySummary.losingDays} losing days.`,
+          title: "Meaningful upskilling effort",
+          message: `You invested ${Math.floor(weeklySummary.studyMinutes / 60)}h ${
+            weeklySummary.studyMinutes % 60
+          }m in learning this week.`,
         });
       }
-    }
-
-    if (weeklySummary.studyMinutes === 0) {
-      insights.push({
-        type: "warning",
-        title: "No upskilling logged",
-        message: "No study time was recorded this week. Either you did not study, or you did not log it.",
-      });
-    } else if (weeklySummary.studyMinutes >= 300) {
-      insights.push({
-        type: "positive",
-        title: "Meaningful upskilling effort",
-        message: `You invested ${Math.floor(weeklySummary.studyMinutes / 60)}h ${
-          weeklySummary.studyMinutes % 60
-        }m in learning this week.`,
-      });
     }
 
     let focusMessage =
@@ -935,17 +1028,18 @@ function App() {
     if (weeklySummary.loggedDays < 4) {
       focusMessage =
         "Log your daily check-in consistently before trying to optimise performance.";
-    } else if (weeklySummary.forcedTrades > 0) {
+    } else if (showTrading && weeklySummary.forcedTrades > 0) {
       focusMessage = "Avoid forced trades. Take only planned setups next week.";
     } else if (
+      showTrading &&
       weeklySummary.ruleFollowRate > 0 &&
       weeklySummary.ruleFollowRate < 70
     ) {
       focusMessage =
         "Focus on following your trading rules before trying to improve profits.";
-    } else if (weeklySummary.studyMinutes === 0) {
+    } else if (showLearning && weeklySummary.studyMinutes === 0) {
       focusMessage = "Schedule a minimum study block and log it every day.";
-    } else if (weeklySummary.losingDays > weeklySummary.profitableDays) {
+    } else if (showTrading && weeklySummary.losingDays > weeklySummary.profitableDays) {
       focusMessage =
         "Review losing trades and identify whether losses came from bad execution or valid setups.";
     }
@@ -957,7 +1051,7 @@ function App() {
     });
 
     return insights;
-  }, [weeklySummary]);
+  }, [weeklySummary, showTrading, showLearning]);
 
   // The dashboard always reflects the current calendar week, even while a
   // historical week is selected in the review screen.
@@ -1230,6 +1324,10 @@ const consistencyData = useMemo(() => {
   const completedGoals = goals.filter(
     (goal) => goal.status === "completed"
   );
+  const visibleMetricAreas = [
+    { key: "trading", enabled: showTrading, label: "Trading" },
+    { key: "learning", enabled: showLearning, label: "Learning" },
+  ].filter((item) => item.enabled);
 
   // -------------------------
   // UPDATE FORM FIELD
@@ -1254,9 +1352,14 @@ const consistencyData = useMemo(() => {
     setAuthActionLoading(true);
 
     try {
+      const redirectTo = getAuthRedirectUrl({
+        env: import.meta.env,
+        origin: window.location.origin,
+      });
+
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
-        options: { redirectTo: window.location.origin },
+        options: { redirectTo },
       });
 
       if (error) throw error;
@@ -1283,6 +1386,17 @@ const consistencyData = useMemo(() => {
     } finally {
       setAuthActionLoading(false);
     }
+  }
+
+  async function handleAuthSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (authMode === "signin") {
+      await signInWithEmail();
+      return;
+    }
+
+    await signUpWithEmail();
   }
 
   async function signUpWithEmail() {
@@ -1474,7 +1588,7 @@ const consistencyData = useMemo(() => {
     return (
       <div className="auth-page">
         <div className="auth-card">
-          <h1>GoalTrack</h1>
+          <h1>TrackMyProgress</h1>
 
           <p>
             Loading...
@@ -1497,7 +1611,7 @@ const consistencyData = useMemo(() => {
           </div>
 
           <h1>
-            GoalTrack
+            Track My Progress
           </h1>
 
           <p>
@@ -1529,13 +1643,13 @@ const consistencyData = useMemo(() => {
 
             <div style={{ textAlign: "center", color: "#94a3b8", fontSize: ".9rem" }}>or</div>
 
-            <div className="email-form">
+            <form className="email-form" onSubmit={handleAuthSubmit}>
               <input placeholder="Email" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} />
               <input placeholder="Password" type="password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} />
 
               <button
+                type="submit"
                 className="primary"
-                onClick={authMode === "signin" ? signInWithEmail : signUpWithEmail}
                 disabled={authActionLoading}
               >
                 {authMode === "signin" ? "Sign in" : "Create account"}
@@ -1544,15 +1658,15 @@ const consistencyData = useMemo(() => {
               <div style={{ marginTop: 8, fontSize: ".9rem", color: "#94a3b8" }}>
                 {authMode === "signin" ? (
                   <span>
-                    New here? <button className="text-button" onClick={() => setAuthMode("signup")}>Create an account</button>
+                    New here? <button type="button" className="text-button" onClick={() => setAuthMode("signup")}>Create an account</button>
                   </span>
                 ) : (
                   <span>
-                    Already have an account? <button className="text-button" onClick={() => setAuthMode("signin")}>Sign in</button>
+                    Already have an account? <button type="button" className="text-button" onClick={() => setAuthMode("signin")}>Sign in</button>
                   </span>
                 )}
               </div>
-            </div>
+            </form>
           </div>
         </div>
       </div>
@@ -1568,7 +1682,7 @@ const consistencyData = useMemo(() => {
       <div className="auth-page">
         <div className="auth-card">
           <h1>
-            GoalTrack
+            Track My Progress
           </h1>
 
           <p>
@@ -1591,7 +1705,7 @@ const consistencyData = useMemo(() => {
       <header className="topbar">
         <div>
           <div className="brand">
-            GoalTrack
+            Track My Progress
           </div>
 
           <div className="subtitle">
@@ -1671,73 +1785,59 @@ const consistencyData = useMemo(() => {
       </section>
     )}
 
-    {/* TODAY */}
-
     <section className="dashboard-section">
       <h2>Today's progress</h2>
 
       {dashboardData.todayEntry ? (
         <div className="dashboard-grid">
-          <AnalyticsCard
-            label="Today's P&L"
-            value={formatCurrency(
-              dashboardData.todayEntry.pnl ?? 0
-            )}
-            valueClass={
-              (dashboardData.todayEntry.pnl ?? 0) >= 0
-                ? "positive"
-                : "negative"
-            }
-          />
+          {showTrading && (
+            <>
+              <AnalyticsCard
+                label="Today's P&L"
+                value={formatCurrency(dashboardData.todayEntry.pnl ?? 0)}
+                valueClass={(dashboardData.todayEntry.pnl ?? 0) >= 0 ? "positive" : "negative"}
+              />
 
-          <AnalyticsCard
-            label="Study time"
-            value={`${
-              dashboardData.todayEntry.studyMinutes ?? 0
-            } min`}
-          />
+              <AnalyticsCard
+                label="Rules followed"
+                value={
+                  dashboardData.todayEntry.followedRules === "yes"
+                    ? "Yes"
+                    : dashboardData.todayEntry.followedRules === "no"
+                    ? "No"
+                    : "—"
+                }
+              />
 
-          <AnalyticsCard
-            label="Rules followed"
-            value={
-              dashboardData.todayEntry.followedRules ===
-              "yes"
-                ? "Yes"
-                : dashboardData.todayEntry
-                    .followedRules === "no"
-                ? "No"
-                : "—"
-            }
-          />
+              <AnalyticsCard
+                label="Forced trade"
+                value={
+                  dashboardData.todayEntry.forcedTrade === "yes"
+                    ? "Yes"
+                    : dashboardData.todayEntry.forcedTrade === "no"
+                    ? "No"
+                    : "—"
+                }
+              />
+            </>
+          )}
 
-          <AnalyticsCard
-            label="Forced trade"
-            value={
-              dashboardData.todayEntry.forcedTrade ===
-              "yes"
-                ? "Yes"
-                : dashboardData.todayEntry
-                    .forcedTrade === "no"
-                ? "No"
-                : "—"
-            }
-          />
+          {showLearning && (
+            <AnalyticsCard
+              label="Study time"
+              value={formatStudyMinutes(dashboardData.todayEntry.studyMinutes ?? 0)}
+            />
+          )}
         </div>
       ) : (
         <section className="card dashboard-empty">
           <h3>No check-in yet</h3>
 
           <p className="muted">
-            Don't wait until the week ends.
-            Log today while the details are fresh.
+            Don't wait until the week ends. Log today while the details are fresh.
           </p>
 
-          <button
-            className="primary"
-            onClick={() =>
-              setTab("checkin")
-            }
-          >
+          <button className="primary" onClick={() => setTab("checkin")}>
             Complete Daily Check-in
           </button>
         </section>
@@ -1748,51 +1848,26 @@ const consistencyData = useMemo(() => {
       <div className="section-title-row">
         <div>
           <h2>Consistency</h2>
-
-          <p className="muted">
-            Your logging habit
-          </p>
+          <p className="muted">Your logging habit</p>
         </div>
       </div>
 
       <div className="streak-grid">
         <section className="card streak-card">
           <span className="streak-icon">🔥</span>
-
           <div>
-            <span className="streak-label">
-              Current streak
-            </span>
-
-            <strong className="streak-value">
-              {consistencyData.currentStreak}
-            </strong>
-
-            <span className="streak-days">
-              {consistencyData.currentStreak === 1
-                ? "day"
-                : "days"}
-            </span>
+            <span className="streak-label">Current streak</span>
+            <strong className="streak-value">{consistencyData.currentStreak}</strong>
+            <span className="streak-days">{consistencyData.currentStreak === 1 ? "day" : "days"}</span>
           </div>
         </section>
 
         <section className="card streak-card">
           <span className="streak-icon">🏆</span>
-
           <div>
-            <span className="streak-label">
-              Best streak
-            </span>
-
-            <strong className="streak-value">
-              {consistencyData.longestStreak}
-            </strong>
-
-            <span className="streak-days">
-              {consistencyData.longestStreak === 1
-                ? "day"
-                : "days"}
-            </span>
+            <span className="streak-label">Best streak</span>
+            <strong className="streak-value">{consistencyData.longestStreak}</strong>
+            <span className="streak-days">{consistencyData.longestStreak === 1 ? "day" : "days"}</span>
           </div>
         </section>
       </div>
@@ -1800,163 +1875,70 @@ const consistencyData = useMemo(() => {
       <section className="card week-tracker">
         <div className="week-tracker-header">
           <h3>Last 7 days</h3>
-
-          <span className="muted">
-            ✓ Logged
-          </span>
+          <span className="muted">✓ Logged</span>
         </div>
 
         <div className="week-days">
           {consistencyData.lastSevenDays.map((day) => (
-            <div
-              key={day.date}
-              className={`week-day ${
-                day.logged ? "logged" : "missed"
-              } ${day.isToday ? "today" : ""}`}
-            >
-              <span className="week-day-name">
-                {day.day}
-              </span>
-
-              <span className="week-day-status">
-                {day.logged
-                  ? "✓"
-                  : day.isToday
-                  ? "•"
-                  : "—"}
-              </span>
+            <div key={day.date} className={`week-day ${day.logged ? "logged" : "missed"} ${day.isToday ? "today" : ""}`}>
+              <span className="week-day-name">{day.day}</span>
+              <span className="week-day-status">{day.logged ? "✓" : day.isToday ? "•" : "—"}</span>
             </div>
           ))}
         </div>
       </section>
     </section>
 
-    {/* THIS WEEK */}
-
     <section className="dashboard-section">
       <div className="section-title-row">
         <div>
           <h2>This week</h2>
-
-          <p className="muted">
-            {formatReviewWeek(
-              currentWeekStart
-            )}
-          </p>
+          <p className="muted">{formatReviewWeek(currentWeekStart)}</p>
         </div>
 
-        <button
-          className="text-button"
-          onClick={() =>
-            setTab("analytics")
-          }
-        >
-          View analytics
-        </button>
+        <button className="text-button" onClick={() => setTab("analytics")}>View analytics</button>
       </div>
 
       <div className="dashboard-grid">
-        <AnalyticsCard
-          label="Week P&L"
-          value={formatCurrency(
-            dashboardWeeklySummary.totalPnl
-          )}
-          valueClass={
-            dashboardWeeklySummary.totalPnl >= 0
-              ? "positive"
-              : "negative"
-          }
-        />
+        {showTrading && (
+          <>
+            <AnalyticsCard label="Week P&L" value={formatCurrency(dashboardWeeklySummary.totalPnl)} valueClass={dashboardWeeklySummary.totalPnl >= 0 ? "positive" : "negative"} />
+            <AnalyticsCard label="Rule follow" value={dashboardWeeklySummary.ruleFollowRate > 0 ? `${dashboardWeeklySummary.ruleFollowRate.toFixed(0)}%` : "—"} />
+          </>
+        )}
 
-        <AnalyticsCard
-          label="Rule follow"
-          value={
-            dashboardWeeklySummary
-              .ruleFollowRate > 0
-              ? `${dashboardWeeklySummary.ruleFollowRate.toFixed(
-                  0
-                )}%`
-              : "—"
-          }
-        />
+        {showLearning && (
+          <AnalyticsCard label="Study time" value={formatStudyMinutes(dashboardWeeklySummary.studyMinutes)} />
+        )}
 
-        <AnalyticsCard
-          label="Study time"
-          value={`${Math.floor(
-            dashboardWeeklySummary.studyMinutes / 60
-          )}h ${
-            dashboardWeeklySummary.studyMinutes % 60
-          }m`}
-        />
-
-        <AnalyticsCard
-          label="Days logged"
-          value={`${dashboardWeeklySummary.loggedDays}/7`}
-        />
+        <AnalyticsCard label="Days logged" value={`${dashboardWeeklySummary.loggedDays}/7`} />
       </div>
     </section>
 
-    {/* CURRENT FOCUS */}
-
     <section className="dashboard-section">
       <h2>Current focus</h2>
-
       <article className="card focus-card">
-        <span className="focus-label">
-          ONE THING FOR THIS WEEK
-        </span>
-
-        <p>
-          {dashboardData.currentFocus}
-        </p>
-
-        <button
-          className="secondary-button"
-          onClick={() =>
-            setTab("review")
-          }
-        >
-          Open Weekly Review
-        </button>
+        <span className="focus-label">ONE THING FOR THIS WEEK</span>
+        <p>{dashboardData.currentFocus}</p>
+        <button className="secondary-button" onClick={() => setTab("review")}>Open Weekly Review</button>
       </article>
     </section>
 
-    {/* QUICK ACTIONS */}
-
     <section className="dashboard-section">
       <h2>Quick actions</h2>
-
       <div className="quick-actions">
-        <button
-          className="quick-action card"
-          onClick={() =>
-            setTab("checkin")
-          }
-        >
+        <button className="quick-action card" onClick={() => setTab("checkin")}>
           <CheckCircle2 size={22} />
-
           <span>Daily Check-in</span>
         </button>
 
-        <button
-          className="quick-action card"
-          onClick={() =>
-            setTab("analytics")
-          }
-        >
+        <button className="quick-action card" onClick={() => setTab("analytics")}>
           <TrendingUp size={22} />
-
           <span>Analytics</span>
         </button>
 
-        <button
-          className="quick-action card"
-          onClick={() =>
-            setTab("review")
-          }
-        >
+        <button className="quick-action card" onClick={() => setTab("review")}>
           <CalendarDays size={22} />
-
           <span>Weekly Review</span>
         </button>
       </div>
@@ -1968,227 +1950,116 @@ const consistencyData = useMemo(() => {
 
         {tab === "checkin" && (
           <section className="page">
-
-            <h1>
-              Daily check-in
-            </h1>
-
-            <p className="muted">
-              A losing day can still
-              be a good process day.
-            </p>
+            <h1>Daily check-in</h1>
+            <p className="muted">A losing day can still be a good process day.</p>
 
             <div className="card form-card">
+              <DateInput label="Date" value={selectedDate} onChange={setSelectedDate} />
 
-              <DateInput
-                label="Date"
-                value={selectedDate}
-                onChange={setSelectedDate}
-              />
+              {showTrading && (
+                <>
+                  <h2>Trading</h2>
+                  <div className="two-col">
+                    <label>
+                      P&L (₹)
+                      <input
+                        type="number"
+                        inputMode="decimal"
+                        placeholder="e.g. 2000 or -1000"
+                        value={form.pnl ?? ""}
+                        onChange={(event) =>
+                          update("pnl", event.target.value === "" ? null : Number(event.target.value))
+                        }
+                      />
+                    </label>
 
-              {/* TRADING */}
+                    <label>
+                      Trades taken
+                      <input
+                        type="number"
+                        inputMode="numeric"
+                        placeholder="0"
+                        value={form.trades ?? ""}
+                        onChange={(event) =>
+                          update("trades", event.target.value === "" ? null : Number(event.target.value))
+                        }
+                      />
+                    </label>
+                  </div>
 
-              <h2>
-                Trading
-              </h2>
-
-              <div className="two-col">
-
-                <label>
-                  P&L (₹)
-
-                  <input
-                    type="number"
-                    inputMode="decimal"
-                    placeholder="e.g. 2000 or -1000"
-                    value={
-                      form.pnl ?? ""
-                    }
-                    onChange={(event) =>
-                      update(
-                        "pnl",
-                        event.target.value ===
-                          ""
-                          ? null
-                          : Number(
-                              event.target
-                                .value
-                            )
-                      )
-                    }
+                  <Choice
+                    label="Did you follow your trading rules?"
+                    value={form.followedRules}
+                    onChange={(value) => update("followedRules", value)}
                   />
-                </label>
 
-                <label>
-                  Trades taken
-
-                  <input
-                    type="number"
-                    inputMode="numeric"
-                    placeholder="0"
-                    value={
-                      form.trades ?? ""
-                    }
-                    onChange={(event) =>
-                      update(
-                        "trades",
-                        event.target.value ===
-                          ""
-                          ? null
-                          : Number(
-                              event.target
-                                .value
-                            )
-                      )
-                    }
+                  <Choice
+                    label="Any forced/revenge trade?"
+                    value={form.forcedTrade}
+                    onChange={(value) => update("forcedTrade", value)}
                   />
-                </label>
+                </>
+              )}
 
-              </div>
+              {showLearning && (
+                <>
+                  <h2>Learning</h2>
+                  <label>
+                    What did you study or build?
+                    <textarea
+                      placeholder="Example: React hooks, Node.js API, DSA problem..."
+                      value={form.studyTopic}
+                      onChange={(event) => update("studyTopic", event.target.value)}
+                    />
+                  </label>
 
-              <Choice
-                label="Did you follow your trading rules?"
-                value={
-                  form.followedRules
-                }
-                onChange={(value) =>
-                  update(
-                    "followedRules",
-                    value
-                  )
-                }
-              />
+                  <label>
+                    Study time (minutes)
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      placeholder="45"
+                      value={form.studyMinutes ?? ""}
+                      onChange={(event) =>
+                        update("studyMinutes", event.target.value === "" ? null : Number(event.target.value))
+                      }
+                    />
+                  </label>
+                </>
+              )}
 
-              <Choice
-                label="Any forced/revenge trade?"
-                value={
-                  form.forcedTrade
-                }
-                onChange={(value) =>
-                  update(
-                    "forcedTrade",
-                    value
-                  )
-                }
-              />
+              {!showTrading && !showLearning && (
+                <section className="empty card">
+                  No tracking areas are enabled. Turn on at least one area in Settings to continue.
+                </section>
+              )}
 
-              {/* UPSKILLING */}
+              {(showTrading || showLearning) && (
+                <>
+                  <h2>Reflection</h2>
 
-              <h2>
-                Upskilling
-              </h2>
+                  <label>
+                    {reflectionPrompts.achievement}
+                    <textarea value={form.achievement} onChange={(event) => update("achievement", event.target.value)} />
+                  </label>
 
-              <label>
-                What did you study
-                or build?
+                  <label>
+                    {reflectionPrompts.mistake}
+                    <textarea value={form.mistake} onChange={(event) => update("mistake", event.target.value)} />
+                  </label>
 
-                <textarea
-                  placeholder="Example: React hooks, Node.js API, DSA problem..."
-                  value={
-                    form.studyTopic
-                  }
-                  onChange={(event) =>
-                    update(
-                      "studyTopic",
-                      event.target.value
-                    )
-                  }
-                />
-              </label>
+                  <label>
+                    {reflectionPrompts.priority}
+                    <textarea value={form.tomorrowPriority} onChange={(event) => update("tomorrowPriority", event.target.value)} />
+                  </label>
+                </>
+              )}
 
-              <label>
-                Study time (minutes)
-
-                <input
-                  type="number"
-                  inputMode="numeric"
-                  placeholder="45"
-                  value={
-                    form.studyMinutes ??
-                    ""
-                  }
-                  onChange={(event) =>
-                    update(
-                      "studyMinutes",
-                      event.target.value ===
-                        ""
-                        ? null
-                        : Number(
-                            event.target.value
-                          )
-                    )
-                  }
-                />
-              </label>
-
-              {/* REFLECTION */}
-
-              <h2>
-                Reflection
-              </h2>
-
-              <label>
-                Today's achievement
-
-                <textarea
-                  value={
-                    form.achievement
-                  }
-                  onChange={(event) =>
-                    update(
-                      "achievement",
-                      event.target.value
-                    )
-                  }
-                />
-              </label>
-
-              <label>
-                What went wrong?
-
-                <textarea
-                  value={
-                    form.mistake
-                  }
-                  onChange={(event) =>
-                    update(
-                      "mistake",
-                      event.target.value
-                    )
-                  }
-                />
-              </label>
-
-              <label>
-                Tomorrow's one
-                priority
-
-                <textarea
-                  value={
-                    form.tomorrowPriority
-                  }
-                  onChange={(event) =>
-                    update(
-                      "tomorrowPriority",
-                      event.target.value
-                    )
-                  }
-                />
-              </label>
-
-              <button
-                className="primary save-button"
-                onClick={saveEntry}
-              >
+              <button className="primary save-button" onClick={saveEntry} disabled={!showTrading && !showLearning}>
                 Save check-in
               </button>
 
-              {saveMessage && (
-                <p className="save-message">
-                  {saveMessage}
-                </p>
-              )}
-
+              {saveMessage && <p className="save-message">{saveMessage}</p>}
             </div>
           </section>
         )}
@@ -2339,53 +2210,71 @@ const consistencyData = useMemo(() => {
             </div>
             {entries.length === 0 ? (
               <section className="empty card">No data available yet. Complete a few daily check-ins first.</section>
-            ) : <>
-              <h2 className="analytics-heading">Overview</h2>
-              <div className="analytics-grid">
-                <AnalyticsCard label="Total P&L" value={formatCurrency(analytics.totalPnl)} valueClass={analytics.totalPnl >= 0 ? "positive" : "negative"} />
-                <AnalyticsCard label="Average daily P&L" value={formatCurrency(analytics.averagePnl)} valueClass={analytics.averagePnl >= 0 ? "positive" : "negative"} />
-                <AnalyticsCard label="Rule follow rate" value={`${analytics.ruleFollowRate.toFixed(0)}%`} />
-                <AnalyticsCard label="Forced trades" value={String(analytics.forcedTradeCount)} />
-                <AnalyticsCard label="Days logged" value={String(analytics.loggedDays)} />
-              </div>
+            ) : (
+              <>
+                <h2 className="analytics-heading">Overview</h2>
+                <div className="analytics-grid">
+                  {showTrading && (
+                    <>
+                      <AnalyticsCard label="Total P&L" value={formatCurrency(analytics.totalPnl)} valueClass={analytics.totalPnl >= 0 ? "positive" : "negative"} />
+                      <AnalyticsCard label="Average daily P&L" value={formatCurrency(analytics.averagePnl)} valueClass={analytics.averagePnl >= 0 ? "positive" : "negative"} />
+                      <AnalyticsCard label="Rule follow rate" value={`${analytics.ruleFollowRate.toFixed(0)}%`} />
+                      <AnalyticsCard label="Forced trades" value={String(analytics.forcedTradeCount)} />
+                    </>
+                  )}
 
-              <ChartCard title="P&L trend" subtitle="Your trading result over time.">
-                <LineChart data={analytics.pnlChartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="date" /><YAxis /><Tooltip />
-                  <Line type="monotone" dataKey="pnl" stroke="#86efac" strokeWidth={2} dot={{ r: 3 }} />
-                </LineChart>
-              </ChartCard>
+                  {showLearning && (
+                    <>
+                      <AnalyticsCard label="Total study time" value={formatStudyMinutes(analytics.totalStudyMinutes)} />
+                      <AnalyticsCard label="Study days" value={String(analytics.studyDays)} />
+                      <AnalyticsCard label="Average study session" value={`${Math.round(analytics.averageStudyMinutes)} min`} />
+                    </>
+                  )}
 
-              <section className="card">
-                <h2>Trading discipline</h2>
-                <div className="discipline-grid">
-                  <AnalyticsRow label="Profitable days" value={String(analytics.profitableDays)} />
-                  <AnalyticsRow label="Losing days" value={String(analytics.losingDays)} />
-                  <AnalyticsRow label="Breakeven days" value={String(analytics.breakevenDays)} />
-                  <AnalyticsRow label="Win rate" value={`${analytics.winRate.toFixed(1)}%`} />
-                  <AnalyticsRow label="Rules followed" value={`${analytics.ruleFollowRate.toFixed(1)}%`} />
-                  <AnalyticsRow label="Forced / revenge trades" value={String(analytics.forcedTradeCount)} />
+                  <AnalyticsCard label="Days logged" value={String(analytics.loggedDays)} />
                 </div>
-              </section>
 
-              <section className="card">
-                <h2>Upskilling</h2>
-                <div className="discipline-grid">
-                  <AnalyticsRow label="Total study time" value={`${Math.floor(analytics.totalStudyMinutes / 60)}h ${analytics.totalStudyMinutes % 60}m`} />
-                  <AnalyticsRow label="Study days" value={String(analytics.studyDays)} />
-                  <AnalyticsRow label="Average study session" value={`${Math.round(analytics.averageStudyMinutes)} min`} />
-                </div>
-              </section>
+                {showTrading && (
+                  <>
+                    <ChartCard title="P&L trend" subtitle="Your trading result over time.">
+                      <LineChart data={analytics.pnlChartData}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="date" /><YAxis /><Tooltip />
+                        <Line type="monotone" dataKey="pnl" stroke="#86efac" strokeWidth={2} dot={{ r: 3 }} />
+                      </LineChart>
+                    </ChartCard>
 
-              <ChartCard title="Study consistency" subtitle="Minutes invested each day.">
-                <BarChart data={analytics.studyChartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="date" /><YAxis /><Tooltip /><Legend />
-                  <Bar dataKey="minutes" name="Study minutes" fill="#93c5fd" />
-                </BarChart>
-              </ChartCard>
-            </>}
+                    <section className="card">
+                      <h2>Trading discipline</h2>
+                      <div className="discipline-grid">
+                        <AnalyticsRow label="Profitable days" value={String(analytics.profitableDays)} />
+                        <AnalyticsRow label="Losing days" value={String(analytics.losingDays)} />
+                        <AnalyticsRow label="Breakeven days" value={String(analytics.breakevenDays)} />
+                        <AnalyticsRow label="Win rate" value={`${analytics.winRate.toFixed(1)}%`} />
+                        <AnalyticsRow label="Rules followed" value={`${analytics.ruleFollowRate.toFixed(1)}%`} />
+                        <AnalyticsRow label="Forced / revenge trades" value={String(analytics.forcedTradeCount)} />
+                      </div>
+                    </section>
+                  </>
+                )}
+
+                {showLearning && (
+                  <>
+                    <ChartCard title="Study consistency" subtitle="Minutes invested each day.">
+                      <BarChart data={analytics.studyChartData}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="date" /><YAxis /><Tooltip /><Legend />
+                        <Bar dataKey="minutes" name="Study minutes" fill="#93c5fd" />
+                      </BarChart>
+                    </ChartCard>
+                  </>
+                )}
+
+                {!showTrading && !showLearning && (
+                  <section className="empty card">Enable a tracking area in Settings to view analytics.</section>
+                )}
+              </>
+            )}
           </section>
         )}
 
@@ -2436,15 +2325,15 @@ const consistencyData = useMemo(() => {
                 </section>
 
                 <section className="review-summary">
-                  <AnalyticsCard
-                    label="Week P&L"
-                    value={formatCurrency(weeklySummary.totalPnl)}
-                    valueClass={weeklySummary.totalPnl >= 0 ? "positive" : "negative"}
-                  />
-                  <AnalyticsCard label="Win rate" value={`${weeklySummary.winRate.toFixed(0)}%`} />
-                  <AnalyticsCard label="Rule follow" value={`${weeklySummary.ruleFollowRate.toFixed(0)}%`} />
-                  <AnalyticsCard label="Forced trades" value={String(weeklySummary.forcedTrades)} />
-                  <AnalyticsCard label="Study time" value={`${Math.floor(weeklySummary.studyMinutes / 60)}h ${weeklySummary.studyMinutes % 60}m`} />
+                  {showTrading && (
+                    <>
+                      <AnalyticsCard label="Week P&L" value={formatCurrency(weeklySummary.totalPnl)} valueClass={weeklySummary.totalPnl >= 0 ? "positive" : "negative"} />
+                      <AnalyticsCard label="Win rate" value={`${weeklySummary.winRate.toFixed(0)}%`} />
+                      <AnalyticsCard label="Rule follow" value={`${weeklySummary.ruleFollowRate.toFixed(0)}%`} />
+                      <AnalyticsCard label="Forced trades" value={String(weeklySummary.forcedTrades)} />
+                    </>
+                  )}
+                  {showLearning && <AnalyticsCard label="Study time" value={formatStudyMinutes(weeklySummary.studyMinutes)} />}
                   <AnalyticsCard label="Days logged" value={String(weeklySummary.loggedDays)} />
                 </section>
 
@@ -2564,6 +2453,44 @@ const consistencyData = useMemo(() => {
           </section>
         )}
 
+        {tab === "settings" && (
+          <section className="page goals-page">
+            <div className="goals-page-header">
+              <div>
+                <p className="muted">Preferences</p>
+                <h1>Tracking Areas</h1>
+              </div>
+            </div>
+
+            <p className="muted goals-intro">
+              Choose what you want to track. The dashboard, check-in, analytics, and review adapt to the modules you enable.
+            </p>
+
+            <section className="card settings-area-list">
+              {TRACKING_AREAS.map((area) => {
+                const active = enabledAreas.includes(area.id);
+
+                return (
+                  <button
+                    key={area.id}
+                    type="button"
+                    className={`settings-area-toggle ${active ? "active" : ""}`}
+                    onClick={() => toggleTrackingArea(area.id)}
+                  >
+                    <div className="settings-area-copy">
+                      <span className="settings-area-name">{area.label}</span>
+                      <span className="settings-area-description">{area.description}</span>
+                    </div>
+                    <span className={`settings-area-status ${active ? "enabled" : "disabled"}`}>
+                      {active ? "Enabled" : "Disabled"}
+                    </span>
+                  </button>
+                );
+              })}
+            </section>
+          </section>
+        )}
+
         {/* GOALS */}
 
         {tab === "goals" && (
@@ -2571,15 +2498,8 @@ const consistencyData = useMemo(() => {
             <div className="goals-page-header">
               <div>
                 <p className="muted">
-                  {new Date().toLocaleDateString(
-                    "en-IN",
-                    {
-                      month: "long",
-                      year: "numeric",
-                    }
-                  )}
+                  {new Date().toLocaleDateString("en-IN", { month: "long", year: "numeric" })}
                 </p>
-
                 <h1>Monthly goals</h1>
               </div>
             </div>
@@ -2591,135 +2511,69 @@ const consistencyData = useMemo(() => {
             <section className="card goals-target-editor">
               <div className="goals-target-editor-header">
                 <div>
-                  <span className="goals-summary-label">
-                    Monthly targets
-                  </span>
+                  <span className="goals-summary-label">Monthly targets</span>
                   <strong>Adjust what matters this month</strong>
                 </div>
 
-                <button
-                  className="secondary-button small-button"
-                  onClick={resetMonthlyGoals}
-                  type="button"
-                >
-                  Reset
-                </button>
+                <button className="secondary-button small-button" onClick={resetMonthlyGoals} type="button">Reset</button>
               </div>
 
               <div className="goals-target-grid">
-                <label>
-                  Trading P&L target
-                  <input
-                    type="number"
-                    min="0"
-                    value={monthlyGoalTargets.tradingPnl}
-                    onChange={(event) =>
-                      updateMonthlyGoalTarget(
-                        "tradingPnl",
-                        event.target.value
-                      )
-                    }
-                  />
-                </label>
+                {showTrading && (
+                  <label>
+                    Trading P&L target
+                    <input type="number" min="0" value={monthlyGoalTargets.tradingPnl} onChange={(event) => updateMonthlyGoalTarget("tradingPnl", event.target.value)} />
+                  </label>
+                )}
 
-                <label>
-                  Study hours
-                  <input
-                    type="number"
-                    min="1"
-                    value={monthlyGoalTargets.studyHours}
-                    onChange={(event) =>
-                      updateMonthlyGoalTarget(
-                        "studyHours",
-                        event.target.value
-                      )
-                    }
-                  />
-                </label>
+                {showLearning && (
+                  <label>
+                    Study hours
+                    <input type="number" min="1" value={monthlyGoalTargets.studyHours} onChange={(event) => updateMonthlyGoalTarget("studyHours", event.target.value)} />
+                  </label>
+                )}
 
                 <label>
                   Check-in days
-                  <input
-                    type="number"
-                    min="1"
-                    value={monthlyGoalTargets.checkinDays}
-                    onChange={(event) =>
-                      updateMonthlyGoalTarget(
-                        "checkinDays",
-                        event.target.value
-                      )
-                    }
-                  />
+                  <input type="number" min="1" value={monthlyGoalTargets.checkinDays} onChange={(event) => updateMonthlyGoalTarget("checkinDays", event.target.value)} />
                 </label>
               </div>
 
-              {monthlyGoalMessage && (
-                <p className="save-message">{monthlyGoalMessage}</p>
-              )}
+              {monthlyGoalMessage && <p className="save-message">{monthlyGoalMessage}</p>}
             </section>
 
             <section className="goals-summary card">
               <div>
-                <span className="goals-summary-label">
-                  This month's execution
-                </span>
-
-                <strong>
-                  {monthlyProgress.checkinDays} days logged
-                </strong>
+                <span className="goals-summary-label">This month's execution</span>
+                <strong>{monthlyProgress.checkinDays} days logged</strong>
               </div>
 
-              <button
-                className="secondary-button"
-                onClick={() =>
-                  setTab("checkin")
-                }
-              >
-                Add check-in
-              </button>
+              <button className="secondary-button" onClick={() => setTab("checkin")}>Add check-in</button>
             </section>
 
-            <GoalProgressCard
-              icon={<TrendingUp size={22} />}
-              title="Trading performance"
-              description="Track monthly net P&L. Do not force trades just to reach the target."
-              currentLabel={formatCurrency(
-                goalsProgress.trading.current
-              )}
-              targetLabel={formatCurrency(
-                goalsProgress.trading.target
-              )}
-              percentage={
-                goalsProgress.trading.percentage
-              }
-              status={
-                goalsProgress.trading.current > 0
-                  ? "positive"
-                  : goalsProgress.trading.current < 0
-                  ? "negative"
-                  : "neutral"
-              }
-            />
+            {showTrading && (
+              <GoalProgressCard
+                icon={<TrendingUp size={22} />}
+                title="Trading performance"
+                description="Track monthly net P&L. Do not force trades just to reach the target."
+                currentLabel={formatCurrency(goalsProgress.trading.current)}
+                targetLabel={formatCurrency(goalsProgress.trading.target)}
+                percentage={goalsProgress.trading.percentage}
+                status={goalsProgress.trading.current > 0 ? "positive" : goalsProgress.trading.current < 0 ? "negative" : "neutral"}
+              />
+            )}
 
-            <GoalProgressCard
-              icon={<BarChart3 size={22} />}
-              title="Upskilling"
-              description="Focused learning time logged this month."
-              currentLabel={`${Math.floor(
-                goalsProgress.upskilling.current / 60
-              )}h ${
-                goalsProgress.upskilling.current % 60
-              }m`}
-              targetLabel={`${monthlyGoalTargets.studyHours}h`}
-              percentage={
-                goalsProgress.upskilling.percentage
-              }
-              status={
-                goalsProgress.upskilling.percentage >= 100
-                  ? "positive"
-                  : "neutral"
-              }
-            />
+            {showLearning && (
+              <GoalProgressCard
+                icon={<BarChart3 size={22} />}
+                title="Upskilling"
+                description="Focused learning time logged this month."
+                currentLabel={`${Math.floor(goalsProgress.upskilling.current / 60)}h ${goalsProgress.upskilling.current % 60}m`}
+                targetLabel={`${monthlyGoalTargets.studyHours}h`}
+                percentage={goalsProgress.upskilling.percentage}
+                status={goalsProgress.upskilling.percentage >= 100 ? "positive" : "neutral"}
+              />
+            )}
 
             <GoalProgressCard
               icon={<CheckCircle2 size={22} />}
@@ -2727,25 +2581,19 @@ const consistencyData = useMemo(() => {
               description="Complete your daily check-in and build the habit of showing up."
               currentLabel={`${goalsProgress.consistency.current} days`}
               targetLabel={`${goalsProgress.consistency.target} days`}
-              percentage={
-                goalsProgress.consistency.percentage
-              }
-              status={
-                goalsProgress.consistency.percentage >= 100
-                  ? "positive"
-                  : "neutral"
-              }
+              percentage={goalsProgress.consistency.percentage}
+              status={goalsProgress.consistency.percentage >= 100 ? "positive" : "neutral"}
             />
+
+            {(!showTrading && !showLearning) && (
+              <section className="empty card">No tracking areas are enabled. Turn one on in Settings to start building goals.</section>
+            )}
 
             <section className="card goals-rule-card">
               <Target size={20} />
-
               <div>
                 <strong>One rule</strong>
-
-                <p>
-                  If you miss a target, change the execution—not the target.
-                </p>
+                <p>If you miss a target, change the execution—not the target.</p>
               </div>
             </section>
           </section>
@@ -2817,6 +2665,13 @@ const consistencyData = useMemo(() => {
           onClick={() =>
             setTab("goals")
           }
+        />
+
+        <NavButton
+          active={tab === "settings"}
+          icon={<Target size={20} />}
+          label="Settings"
+          onClick={() => setTab("settings")}
         />
 
       </nav>

@@ -410,6 +410,72 @@ label { display:flex; flex-direction:column; gap:7px; font-size:.88rem; font-wei
 .goals-target-editor { margin-bottom:16px; }
 .goals-target-editor-header { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:14px; }
 .goals-target-editor-header strong { display:block; font-size:0.96rem; }
+.settings-area-list {
+  display:grid;
+  gap:12px;
+}
+.settings-area-toggle {
+  width:100%;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px;
+  border:1px solid var(--border);
+  background: rgba(15, 23, 42, 0.72);
+  color: var(--text);
+  padding:16px 18px;
+  border-radius:16px;
+  text-align:left;
+  transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+.settings-area-toggle:hover {
+  border-color: rgba(148, 163, 184, 0.45);
+  transform: translateY(-1px);
+}
+.settings-area-toggle.active {
+  background: linear-gradient(180deg, rgba(139, 92, 246, 0.15), rgba(37, 99, 235, 0.08));
+  border-color: rgba(139, 92, 246, 0.4);
+  box-shadow: 0 8px 20px rgba(76, 29, 149, 0.12);
+}
+.settings-area-copy {
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  min-width:0;
+}
+.settings-area-name {
+  display:block;
+  font-size:1rem;
+  font-weight:600;
+}
+.settings-area-description {
+  display:block;
+  color: var(--text-soft);
+  font-size:0.8rem;
+  line-height:1.4;
+}
+.settings-area-status {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-width:90px;
+  padding:8px 10px;
+  border-radius:999px;
+  font-size:0.76rem;
+  font-weight:600;
+  letter-spacing:0.02em;
+  border:1px solid transparent;
+}
+.settings-area-status.enabled {
+  background: rgba(34, 197, 94, 0.12);
+  border-color: rgba(34, 197, 94, 0.35);
+  color: #dcfce7;
+}
+.settings-area-status.disabled {
+  background: rgba(148, 163, 184, 0.08);
+  border-color: rgba(148, 163, 184, 0.28);
+  color: var(--text-soft);
+}
 .goals-target-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:12px; }
 .small-button { padding:8px 12px; }
 .measurable-goal-card { padding:18px; margin-bottom:14px; }
