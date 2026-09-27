@@ -1,21 +1,22 @@
-# GoalManager
+# Track My Progress
 
-A mobile-first personal tracker for:
-- Trading P&L and trading discipline
-- Upskilling and study time
-- Daily achievements and reflections
-- Streaks and simple progress metrics
+A lightweight, mobile-first personal tracker for daily habits, study time, trading discipline, and progress reflections.
+
+## Features
+
+- Log daily entries and reflections
+- Track goals and streaks
+- Lightweight Supabase-backed persistence
+- Small, focused React + TypeScript app suitable for local dev and static hosting
 
 ## Tech stack
 
 - Vite + React + TypeScript
-- Supabase (Postgres) as the backend
+- Supabase (Postgres) for persistence
 
-## Latest implementation
+## Quickstart
 
-This version uses Supabase for persistence. The client is initialized in `src/supabaseClient.ts` and domain services live under `src/services/` (`dailyEntries.ts`, `goals.ts`, `weeklyReviews.ts`). A SQL migration for the primary `daily_entries` table is available at `supabase/daily_entries.sql`.
-
-## Run locally
+Prerequisites: Node.js (16+ recommended) and a Supabase project (optional for local-only testing).
 
 1. Create a `.env` file in the project root with these variables:
 
@@ -24,49 +25,51 @@ VITE_SUPABASE_URL=<your-supabase-url>
 VITE_SUPABASE_ANON_KEY=<your-supabase-anon-key>
 ```
 
-2. Install and run in development:
+2. Install dependencies and start development server:
 
 ```bash
 npm install
 npm run dev
 ```
 
-3. Build for production:
+3. Build for production and preview locally:
 
 ```bash
 npm run build
 npm run preview
 ```
 
-## Database / Migrations
+## Supabase / Database
 
-- To create the required table locally or on your Supabase project, run the SQL in `supabase/daily_entries.sql` (creates `daily_entries`).
-- The app expects the `daily_entries` table shape matching the queries in `src/services/dailyEntries.ts`.
+- A SQL migration for the primary `daily_entries` table is available at `supabase/daily_entries.sql`.
+- The client is initialized in `src/supabaseClient.ts` and services for domain logic live under `src/services/` (`dailyEntries.ts`, `goals.ts`, `weeklyReviews.ts`).
 
-## Vercel deployment
+If you deploy or use Supabase, ensure the environment variables from the Quickstart are set and that the `daily_entries` table exists with the expected schema.
 
-1. Push this repository to GitHub (or Git provider) and import the project into Vercel.
-2. Set the following Environment Variables in Vercel (Project Settings → Environment Variables):
+## Project structure (key files)
 
-```
-VITE_SUPABASE_URL    -> your Supabase project URL
-VITE_SUPABASE_ANON_KEY -> your Supabase anon/public key
-```
+- `src/main.tsx` — app entry
+- `src/supabaseClient.ts` — Supabase client initialization
+- `src/services/` — domain services for entries, goals, weekly reviews
+- `supabase/daily_entries.sql` — SQL to create the `daily_entries` table
 
-3. Use these build settings (Vercel detects Vite automatically, but verify):
+## Deployment
 
-- Build command: `npm run build`
-- Output directory: `dist`
+Works well as a static site (Vite build) on platforms like Vercel, Netlify, or Cloudflare Pages. When deploying, set the same `VITE_SUPABASE_*` environment variables in the hosting provider.
 
-4. Deploy. Vercel will build and serve the static app. Ensure your Supabase project's RLS and API settings allow requests from your deployed origin or use appropriate row-level security policies and service keys for server-side actions.
+## Contributing
 
-## Notes & troubleshooting
+Simple steps:
 
-- If the app can't read/write entries after deployment, verify `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` are correct and that the Supabase table exists and has the correct columns.
-- For local debugging, check the network requests in the browser devtools to confirm Supabase responses.
+1. Fork and create a branch for changes
+2. Open a PR with a short description
 
-## Quick links
+If you want, I can add a CONTRIBUTING.md and run formatting/lint scripts.
 
-- Client init: `src/supabaseClient.ts`
-- Services: `src/services/dailyEntries.ts`, `src/services/goals.ts`, `src/services/weeklyReviews.ts`
-- Migration SQL: `supabase/daily_entries.sql`
+## License
+
+This project is provided as-is. Add a license file if you plan to publish.
+
+## Need help?
+
+Tell me what you'd like updated next — examples: add CI, improve README sections, or create a demo dataset.
